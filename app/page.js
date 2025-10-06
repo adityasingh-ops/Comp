@@ -222,35 +222,62 @@ const CodeQuestApp = () => {
   };
 
   const handleProblemSolved = async (problemId, points) => {
-    if (!user || !userStats) return;
+  if (!user || !userStats) return;
 
-    const isAlreadySolved = solvedProblems.has(problemId);
-    const newSolvedProblems = new Set(solvedProblems);
-    
-    if (isAlreadySolved) {
-      newSolvedProblems.delete(problemId);
-    } else {
-      newSolvedProblems.add(problemId);
-    }
+  const isAlreadySolved = solvedProblems.has(problemId);
+  const newSolvedProblems = new Set(solvedProblems);
+  
+  if (isAlreadySolved) {
+    // Unmark as solved - remove points
+    newSolvedProblems.delete(problemId);
+  } else {
+    // Mark as solved - add points
+    newSolvedProblems.add(problemId);
+  }
 
-    const newPoints = isAlreadySolved ? userStats.points - points : userStats.points + points;
-    const newSolvedCount = newSolvedProblems.size;
+  // Calculate points based on actual state change
+  const pointsChange = isAlreadySolved ? -points : points;
+  const newPoints = Math.max(0, userStats.points + pointsChange); // Ensure points never go negative
+  const newSolvedCount = newSolvedProblems.size;
 
-    await supabase
+  try {
+    // Update in database
+    const { error } = await supabase
       .from('user_stats')
       .update({
         points: newPoints,
         solved_count: newSolvedCount,
         solved_problems: Array.from(newSolvedProblems),
-        last_solved: new Date().toISOString()
+        last_solved: isAlreadySolved ? null : new Date().toISOString() // Only update timestamp when solving
       })
       .eq('user_id', user.id);
 
-    await updateWeeklyStreak();
+    if (error) {
+      console.error('Error updating stats:', error);
+      alert('Failed to update progress. Please try again.');
+      return;
+    }
+
+    // Only update streak when marking as solved, not when unmarking
+    if (!isAlreadySolved) {
+      await updateWeeklyStreak();
+    }
+
+    // Update local state
     setSolvedProblems(newSolvedProblems);
-    setUserStats({ ...userStats, points: newPoints, solved_count: newSolvedCount });
+    setUserStats({ 
+      ...userStats, 
+      points: newPoints, 
+      solved_count: newSolvedCount,
+      last_solved: isAlreadySolved ? userStats.last_solved : new Date().toISOString()
+    });
     await loadLeaderboard();
-  };
+
+  } catch (error) {
+    console.error('Error handling problem solved:', error);
+    alert('An error occurred. Please try again.');
+  }
+};
 
   const updateWeeklyStreak = async () => {
     const today = new Date();
@@ -282,66 +309,69 @@ const CodeQuestApp = () => {
   const fetchLeetcodeStats = async (username) => {
     setIsLoadingLeetcode(true);
     try {
-      // Mock LeetCode data (in production, you'd use a backend API)
-      const mockData = {
+      // Using LeetCode API via proxy (alfa-leetcode-api.onrender.com)
+      const [userInfoRes, userProfileRes] = await Promise.all([
+        fetch(`https://alfa-leetcode-api.onrender.com/${username}`),
+        fetch(`https://alfa-leetcode-api.onrender.com/${username}/solved`)
+      ]);
+
+      if (!userInfoRes.ok || !userProfileRes.ok) {
+        throw new Error('User not found or API error');
+      }
+
+      const userInfo = await userInfoRes.json();
+      const userProfile = await userProfileRes.json();
+
+      const leetcodeData = {
         username: username,
-        realName: "LeetCode User",
-        ranking: Math.floor(Math.random() * 100000) + 1000,
-        reputation: Math.floor(Math.random() * 5000),
+        realName: userInfo.name || username,
+        ranking: userInfo.ranking || 0,
+        reputation: userInfo.reputation || 0,
         solved: {
-          easy: Math.floor(Math.random() * 300) + 50,
-          medium: Math.floor(Math.random() * 200) + 30,
-          hard: Math.floor(Math.random() * 100) + 10,
-          all: 0
+          easy: userProfile.easySolved || 0,
+          medium: userProfile.mediumSolved || 0,
+          hard: userProfile.hardSolved || 0,
+          all: userProfile.solvedProblem || 0
         },
         submissions: {
-          easy: Math.floor(Math.random() * 500) + 100,
-          medium: Math.floor(Math.random() * 400) + 80,
-          hard: Math.floor(Math.random() * 200) + 30,
-          all: 0
+          easy: userProfile.easySolved || 0,
+          medium: userProfile.mediumSolved || 0,
+          hard: userProfile.hardSolved || 0,
+          all: userProfile.totalSubmissionNum?.[0]?.count || 0
         },
         calendar: {
-          streak: Math.floor(Math.random() * 100) + 5,
-          totalActiveDays: Math.floor(Math.random() * 365) + 30
+          streak: userInfo.consecutiveDays || 0,
+          totalActiveDays: userInfo.activeDays || 0
         },
         contestRanking: {
-          attendedContestsCount: Math.floor(Math.random() * 50) + 5,
-          rating: Math.floor(Math.random() * 2000) + 1200,
-          globalRanking: Math.floor(Math.random() * 50000) + 1000,
-          topPercentage: (Math.random() * 10 + 1).toFixed(2)
+          attendedContestsCount: userInfo.contestAttend || 0,
+          rating: Math.round(userInfo.contestRating || 0),
+          globalRanking: userInfo.contestGlobalRanking || 0,
+          topPercentage: userInfo.contestTopPercentage?.toFixed(2) || '0.00'
         },
-        badges: [
-          { displayName: 'Annual Badge 2024', icon: '🏆' },
-          { displayName: '50 Days Badge', icon: '🔥' },
-          { displayName: 'Contest Master', icon: '⚡' }
-        ],
-        recentSubmissions: Array.from({ length: 10 }, (_, i) => ({
-          title: `Problem ${i + 1}`,
-          statusDisplay: Math.random() > 0.3 ? 'Accepted' : 'Wrong Answer',
-          timestamp: Date.now() - Math.random() * 86400000 * 7,
-          lang: ['JavaScript', 'Python', 'Java', 'C++'][Math.floor(Math.random() * 4)]
-        })),
+        badges: userInfo.badges?.map(badge => ({
+          displayName: badge.displayName || badge.name,
+          icon: badge.icon || '🏆'
+        })) || [],
+        recentSubmissions: userInfo.recentSubmissions?.slice(0, 10) || [],
         lastUpdated: new Date().toISOString()
       };
 
-      mockData.solved.all = mockData.solved.easy + mockData.solved.medium + mockData.solved.hard;
-      mockData.submissions.all = mockData.submissions.easy + mockData.submissions.medium + mockData.submissions.hard;
-
-      setLeetcodeStats(mockData);
+      setLeetcodeStats(leetcodeData);
       
       // Save to database
       await supabase
         .from('user_stats')
         .update({
           leetcode_username: username,
-          leetcode_stats: mockData
+          leetcode_stats: leetcodeData
         })
         .eq('user_id', user.id);
 
-      return mockData;
+      return leetcodeData;
     } catch (error) {
       console.error('Error fetching LeetCode stats:', error);
-      alert('Failed to fetch LeetCode profile. Please try again.');
+      alert(`Failed to fetch LeetCode profile for "${username}". Please verify the username is correct and try again.`);
       return null;
     } finally {
       setIsLoadingLeetcode(false);
