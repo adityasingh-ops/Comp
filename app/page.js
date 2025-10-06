@@ -387,7 +387,7 @@ const CodeQuestApp = () => {
     const { error } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: "https://comp-umber.vercel.app/auth/callback"
+        redirectTo: "https://comp-umber.vercel.app"
       }
     });
     if (error) console.error('Error signing in:', error);
